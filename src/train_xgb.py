@@ -210,7 +210,7 @@ def main():
     # Save model
     model_path = Path(args.model_output)
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    model.save_model(str(model_path))
+    model.get_booster().save_model(str(model_path))
     logger.info(f"Model saved to {model_path}")
     
     # Save metrics
