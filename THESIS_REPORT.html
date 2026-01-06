@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>OFI Prediction - Thesis Report</title>
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 2rem;
+    color: #333;
+    background-color: #fff;
+}
+h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 0.5rem; margin-top: 2rem; }
+h2 { color: #34495e; border-bottom: 1px solid #eee; padding-bottom: 0.3rem; margin-top: 2.5rem; }
+h3 { color: #57606f; margin-top: 1.5rem; }
+table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; overflow-x: auto; display: block; }
+th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+th { background-color: #f8f9fa; font-weight: 600; }
+tr:nth-child(even) { background-color: #fcfcfc; }
+code { background-color: #f1f2f6; padding: 2px 5px; border-radius: 4px; font-family: "SF Mono", Consolas, monospace; font-size: 0.9em; }
+pre { background-color: #2f3640; color: #f5f6fa; padding: 1.5rem; border-radius: 8px; overflow-x: auto; line-height: 1.4; }
+pre code { background: none; color: inherit; padding: 0; }
+blockquote { border-left: 4px solid #3498db; margin: 1.5rem 0; padding: 1rem 1.5rem; background: #ebf5fb; font-style: italic; border-radius: 4px; }
+a { color: #3498db; text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: none; border-top: 1px solid #eee; margin: 3rem 0; }
+</style>
+</head>
+<body>
+<h1 id="order-flow-imbalance-ofi-prediction-analysis">Order Flow Imbalance (OFI) Prediction Analysis</h1>
+<h2 id="comprehensive-technical-report">Comprehensive Technical Report</h2>
+<p><strong>Author:</strong> Rushil Kakkad<br />
+<strong>Date:</strong> January 6, 2026<br />
+<strong>Repository:</strong> <a href="https://github.com/Rushil1234/noah_ofi_local">github.com/Rushil1234/noah_ofi_local</a></p>
+<hr />
+<h2 id="executive-summary">Executive Summary</h2>
+<p>This report documents the complete analysis of Order Flow Imbalance (OFI) predictability using WRDS TAQM NBBO millisecond data for AAPL and MSFT during 2023. The key findings are:</p>
+<ol>
+<li><strong>OFI is highly predictable</strong> at the 5-minute horizon (79% directional accuracy)</li>
+<li><strong>OFI exhibits AR(1)-like structure</strong> with lag-1 autocorrelation of ~56%</li>
+<li><strong>Cross-asset dynamics exist</strong>: AAPL and MSFT OFI are 35% correlated</li>
+<li><strong>Granger causality is bidirectional</strong>: MSFT→AAPL is statistically stronger (p=0.0002)</li>
+<li><strong>XGBoost significantly outperforms LSTM</strong> for this task</li>
+</ol>
+<hr />
+<h2 id="1-data-extraction">1. Data Extraction</h2>
+<h3 id="11-data-source">1.1 Data Source</h3>
+<ul>
+<li><strong>Database:</strong> WRDS TAQM (TAQ Millisecond)</li>
+<li><strong>Tables:</strong> <code>taqm_2023.nbbom_YYYYMMDD</code> (NBBO updates)</li>
+<li><strong>Symbols:</strong> AAPL, MSFT</li>
+<li><strong>Period:</strong> January 3, 2023 – December 29, 2023</li>
+<li><strong>Trading Hours:</strong> 09:30–16:00 (Regular Trading Hours)</li>
+</ul>
+<h3 id="12-extraction-statistics">1.2 Extraction Statistics</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Total parquet files</td>
+<td>500</td>
+</tr>
+<tr>
+<td>Total 5-min bars</td>
+<td>38,998 (per symbol)</td>
+</tr>
+<tr>
+<td>Combined dataset</td>
+<td>77,996 rows</td>
+</tr>
+<tr>
+<td>Date range</td>
+<td>250 trading days</td>
+</tr>
+<tr>
+<td>Bars per day</td>
+<td>~78 (6.5 hours × 12 bars/hour)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="13-ofi-computation">1.3 OFI Computation</h3>
+<p>Order Flow Imbalance is computed at the event level using NBBO quote changes:</p>
+<p><strong>Bid Contribution (e_bid):</strong>
+- If bid price ↑: +bid_size_t
+- If bid price ↓: -bid_size_{t-1}
+- If bid price unchanged: +(bid_size_t - bid_size_{t-1})</p>
+<p><strong>Ask Contribution (e_ask):</strong>
+- If ask price ↓: -ask_size_t
+- If ask price ↑: +ask_size_{t-1}
+- If ask price unchanged: -(ask_size_t - ask_size_{t-1})</p>
+<p><strong>Event OFI:</strong> <code>ofi_event = e_bid + e_ask</code></p>
+<p><strong>5-Minute Bar OFI:</strong> Sum of event OFI within each 5-minute bucket</p>
+<h3 id="14-sql-implementation">1.4 SQL Implementation</h3>
+<p>The extraction uses PostgreSQL window functions for efficiency:</p>
+<pre><code class="language-sql">WITH nbbo AS (
+    SELECT 
+        time_m,
+        best_bid, best_bidsiz, best_ask, best_asksiz,
+        LAG(best_bid) OVER (ORDER BY time_m) AS prev_bid,
+        LAG(best_bidsiz) OVER (ORDER BY time_m) AS prev_bidsiz,
+        -- ... similar for ask
+        FLOOR(EXTRACT(EPOCH FROM time_m) / 300) AS bucket
+    FROM taqm_2023.nbbom_YYYYMMDD
+    WHERE sym_root = 'AAPL' AND time_m &gt;= '09:30:00' AND time_m &lt; '16:00:00'
+),
+ofi_events AS (
+    SELECT bucket,
+        CASE WHEN best_bid &gt; prev_bid THEN best_bidsiz
+             WHEN best_bid &lt; prev_bid THEN -prev_bidsiz
+             ELSE best_bidsiz - prev_bidsiz END AS e_bid,
+        -- ... similar for e_ask
+    FROM nbbo
+)
+SELECT bucket, SUM(e_bid + e_ask) AS ofi FROM ofi_events GROUP BY bucket
+</code></pre>
+<hr />
+<h2 id="2-dataset-preparation">2. Dataset Preparation</h2>
+<h3 id="21-feature-engineering">2.1 Feature Engineering</h3>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ofi_z</code></td>
+<td>Z-score normalized OFI (using training set statistics)</td>
+</tr>
+<tr>
+<td><code>lag1</code></td>
+<td>Previous bar's ofi_z</td>
+</tr>
+<tr>
+<td><code>lag2</code></td>
+<td>2 bars ago ofi_z</td>
+</tr>
+<tr>
+<td><code>lag3</code></td>
+<td>3 bars ago ofi_z</td>
+</tr>
+<tr>
+<td><code>lag6</code></td>
+<td>6 bars ago ofi_z</td>
+</tr>
+<tr>
+<td><code>lag12</code></td>
+<td>12 bars ago ofi_z</td>
+</tr>
+<tr>
+<td><code>y_next</code></td>
+<td>Target: next bar's ofi_z</td>
+</tr>
+</tbody>
+</table>
+<h3 id="22-data-splits">2.2 Data Splits</h3>
+<table>
+<thead>
+<tr>
+<th>Split</th>
+<th>Date Range</th>
+<th>Rows</th>
+<th>Percentage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Train</td>
+<td>Jan–Sep 2023</td>
+<td>58,340</td>
+<td>74.8%</td>
+</tr>
+<tr>
+<td>Validation</td>
+<td>Oct–Nov 2023</td>
+<td>13,416</td>
+<td>17.2%</td>
+</tr>
+<tr>
+<td>Test</td>
+<td>Dec 2023</td>
+<td>6,240</td>
+<td>8.0%</td>
+</tr>
+</tbody>
+</table>
+<h3 id="23-normalization-leak-free">2.3 Normalization (Leak-Free)</h3>
+<p>To avoid look-ahead bias, normalization uses <strong>training set statistics only</strong>:</p>
+<pre><code class="language-python"># Compute from training period
+train_mean = train_df['ofi'].mean()  
+train_std = train_df['ofi'].std()
+
+# Apply to all data
+df['ofi_z'] = (df['ofi'] - train_mean) / train_std
+</code></pre>
+<p>AAPL training statistics: mean=10.93, std=815.07
+MSFT training statistics: mean=-10.24, std=475.63</p>
+<hr />
+<h2 id="3-model-training-results">3. Model Training Results</h2>
+<h3 id="31-xgboost-regressor">3.1 XGBoost Regressor</h3>
+<p><strong>Hyperparameters:</strong>
+- n_estimators: 100
+- max_depth: 4
+- learning_rate: 0.1
+- tree_method: hist (CPU-optimized)</p>
+<p><strong>Performance:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Split</th>
+<th>MSE</th>
+<th>MAE</th>
+<th>Correlation</th>
+<th>Directional Accuracy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Train</td>
+<td>0.489</td>
+<td>0.365</td>
+<td>71.29%</td>
+<td>78.25%</td>
+</tr>
+<tr>
+<td>Validation</td>
+<td>0.501</td>
+<td>0.373</td>
+<td>70.36%</td>
+<td>77.78%</td>
+</tr>
+<tr>
+<td><strong>Test</strong></td>
+<td><strong>0.499</strong></td>
+<td><strong>0.339</strong></td>
+<td><strong>70.65%</strong></td>
+<td><strong>79.16%</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Feature Importance:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Importance</th>
+<th>Interpretation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ofi_z</td>
+<td>62.01%</td>
+<td>Current bar OFI is dominant predictor</td>
+</tr>
+<tr>
+<td>lag1</td>
+<td>23.27%</td>
+<td>Recent momentum matters</td>
+</tr>
+<tr>
+<td>lag2</td>
+<td>8.17%</td>
+<td>Decaying importance</td>
+</tr>
+<tr>
+<td>lag3</td>
+<td>4.02%</td>
+<td>Minor contribution</td>
+</tr>
+<tr>
+<td>lag6</td>
+<td>1.32%</td>
+<td>Near-zero</td>
+</tr>
+<tr>
+<td>lag12</td>
+<td>1.20%</td>
+<td>Near-zero</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Key Insight:</strong> Current OFI alone explains 62% of predictive power. The model is largely exploiting short-term persistence.</p>
+<h3 id="32-lstm-neural-network">3.2 LSTM Neural Network</h3>
+<p><strong>Architecture:</strong></p>
+<pre><code>OFILSTMModel(
+  (lstm): LSTM(6, 64, num_layers=2, batch_first=True, dropout=0.2)
+  (fc): Sequential(
+    Linear(64, 32), ReLU(), Dropout(0.2), Linear(32, 1)
+  )
+)
+Total parameters: 53,825
+</code></pre>
+<p><strong>Training:</strong>
+- Device: Apple MPS (GPU)
+- Epochs: 9 (early stopping at epoch 4)
+- Sequence length: 24 bars (2 hours)</p>
+<p><strong>Performance:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Test MSE</td>
+<td>0.975</td>
+</tr>
+<tr>
+<td>Test MAE</td>
+<td>0.603</td>
+</tr>
+<tr>
+<td>Test Correlation</td>
+<td>15.26%</td>
+</tr>
+<tr>
+<td>Test Directional Accuracy</td>
+<td>59.05%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Key Insight:</strong> LSTM significantly underperforms XGBoost. The sequential structure adds noise rather than signal—OFI doesn't have complex temporal dependencies beyond lag-1.</p>
+<h3 id="33-model-comparison">3.3 Model Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>MSE</th>
+<th>Correlation</th>
+<th>Dir. Accuracy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>XGBoost</strong></td>
+<td><strong>0.499</strong></td>
+<td><strong>70.65%</strong></td>
+<td><strong>79.16%</strong></td>
+</tr>
+<tr>
+<td>LSTM</td>
+<td>0.975</td>
+<td>15.26%</td>
+<td>59.05%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Winner: XGBoost</strong> (simpler is better for this task)</p>
+<hr />
+<h2 id="4-ablation-tests">4. Ablation Tests</h2>
+<h3 id="41-feature-configuration-analysis">4.1 Feature Configuration Analysis</h3>
+<table>
+<thead>
+<tr>
+<th>Configuration</th>
+<th>Features</th>
+<th>MSE</th>
+<th>Corr</th>
+<th>Dir.Acc</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Full model</strong></td>
+<td>ofi_z + all lags</td>
+<td><strong>0.499</strong></td>
+<td><strong>70.65%</strong></td>
+<td><strong>79.16%</strong></td>
+</tr>
+<tr>
+<td>Only ofi_z</td>
+<td>Current bar only</td>
+<td>0.659</td>
+<td>58.19%</td>
+<td>78.95%</td>
+</tr>
+<tr>
+<td>Lags only</td>
+<td>lag1-12 (no current)</td>
+<td>0.963</td>
+<td>17.66%</td>
+<td>58.96%</td>
+</tr>
+<tr>
+<td>Only lag1</td>
+<td>Single lag</td>
+<td>0.964</td>
+<td>17.70%</td>
+<td>59.27%</td>
+</tr>
+<tr>
+<td>Lags 1-3</td>
+<td>Short-term lags</td>
+<td>0.964</td>
+<td>17.39%</td>
+<td>59.25%</td>
+</tr>
+</tbody>
+</table>
+<h3 id="42-ar-baseline-comparison">4.2 AR Baseline Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>MSE</th>
+<th>Correlation</th>
+<th>Dir. Accuracy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AR(1)</td>
+<td>0.969</td>
+<td>16.15%</td>
+<td>59.11%</td>
+</tr>
+<tr>
+<td>AR(3)</td>
+<td>0.969</td>
+<td>16.14%</td>
+<td>59.68%</td>
+</tr>
+<tr>
+<td>AR(6)</td>
+<td>0.968</td>
+<td>16.15%</td>
+<td>59.84%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Key Findings:</strong></p>
+<ol>
+<li><strong>Current OFI dominates</strong>: Removing ofi_z drops correlation from 70.6% to 17.7%</li>
+<li><strong>XGBoost marginally beats AR</strong>: 17.7% vs 16.2% correlation for lag-only models</li>
+<li><strong>Nonlinearity helps slightly</strong>: XGBoost captures minor regime effects</li>
+<li><strong>Directional accuracy stable</strong>: ~79% whether using current OFI or full model</li>
+</ol>
+<hr />
+<h2 id="5-autocorrelation-analysis">5. Autocorrelation Analysis</h2>
+<h3 id="51-lag-1-autocorrelation">5.1 Lag-1 Autocorrelation</h3>
+<table>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Lag-1 ACF</th>
+<th>Lag-6 ACF</th>
+<th>Lag-12 ACF</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AAPL</td>
+<td>0.5653</td>
+<td>0.0195</td>
+<td>-0.0079</td>
+</tr>
+<tr>
+<td>MSFT</td>
+<td>0.5697</td>
+<td>0.0543</td>
+<td>0.0165</td>
+</tr>
+</tbody>
+</table>
+<h3 id="52-interpretation">5.2 Interpretation</h3>
+<p>OFI exhibits:
+- <strong>Strong lag-1 persistence</strong>: ~56% autocorrelation
+- <strong>Rapid decay</strong>: Near-zero after lag-1
+- <strong>AR(1)-like structure</strong>: Consistent with mean reversion</p>
+<p>This explains why current OFI (ofi_z) is the dominant predictor—it captures most of the predictable persistence.</p>
+<hr />
+<h2 id="6-cross-asset-analysis">6. Cross-Asset Analysis</h2>
+<h3 id="61-contemporaneous-correlation">6.1 Contemporaneous Correlation</h3>
+<p>AAPL-MSFT OFI correlation: <strong>35.33%</strong></p>
+<p>This suggests common factor exposure (e.g., market-wide order flow, sector effects).</p>
+<h3 id="62-lead-lag-correlations">6.2 Lead-Lag Correlations</h3>
+<table>
+<thead>
+<tr>
+<th>Lag</th>
+<th>AAPL leads MSFT</th>
+<th>MSFT leads AAPL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>27.44%</td>
+<td>28.31%</td>
+</tr>
+<tr>
+<td>2</td>
+<td>19.55%</td>
+<td>21.28%</td>
+</tr>
+<tr>
+<td>3</td>
+<td>11.65%</td>
+<td>14.25%</td>
+</tr>
+<tr>
+<td>6</td>
+<td>3.54%</td>
+<td>4.72%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Observation:</strong> Symmetric decay suggests common factor rather than price leadership.</p>
+<h3 id="63-cross-prediction-performance">6.3 Cross-Prediction Performance</h3>
+<table>
+<thead>
+<tr>
+<th>Experiment</th>
+<th>Target</th>
+<th>Correlation</th>
+<th>Dir. Accuracy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>AAPL → MSFT</strong></td>
+<td>msft_next</td>
+<td>23.25%</td>
+<td>58.37%</td>
+</tr>
+<tr>
+<td><strong>MSFT → AAPL</strong></td>
+<td>aapl_next</td>
+<td>25.91%</td>
+<td>57.88%</td>
+</tr>
+<tr>
+<td>MSFT own</td>
+<td>msft_next</td>
+<td>85.35%</td>
+<td>89.97%</td>
+</tr>
+<tr>
+<td>AAPL own</td>
+<td>aapl_next</td>
+<td>84.04%</td>
+<td>88.16%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Key Finding:</strong> Cross-stock prediction has limited power (23-26% correlation) compared to own-stock (85%).</p>
+<h3 id="64-granger-causality-tests">6.4 Granger Causality Tests</h3>
+<table>
+<thead>
+<tr>
+<th>Direction</th>
+<th>F-statistic</th>
+<th>p-value</th>
+<th>Significant</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AAPL → MSFT</td>
+<td>2.74</td>
+<td>0.0272</td>
+<td>Yes (5%)</td>
+</tr>
+<tr>
+<td><strong>MSFT → AAPL</strong></td>
+<td><strong>5.46</strong></td>
+<td><strong>0.0002</strong></td>
+<td><strong>Yes (0.1%)</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Key Finding:</strong> MSFT OFI Granger-causes AAPL OFI with high significance. This suggests MSFT may lead AAPL in order flow dynamics.</p>
+<hr />
+<h2 id="7-thesis-implications">7. Thesis Implications</h2>
+<h3 id="71-for-the-paper">7.1 For the Paper</h3>
+<p><strong>Claim 1: OFI is predictable</strong></p>
+<blockquote>
+<p>"OFI exhibits strong short-memory autocorrelation (lag-1 ACF ≈ 0.56), enabling 79% directional accuracy in next-bar prediction using XGBoost regression."</p>
+</blockquote>
+<p><strong>Claim 2: Structure is AR(1)-like</strong></p>
+<blockquote>
+<p>"Feature importance analysis reveals current-bar OFI accounts for 62% of predictive power, with lag features contributing marginally. This AR(1)-like structure limits gains from deep learning approaches."</p>
+</blockquote>
+<p><strong>Claim 3: Cross-asset dynamics exist</strong></p>
+<blockquote>
+<p>"Contemporaneous AAPL-MSFT OFI correlation of 35% suggests common factor exposure. Granger causality tests indicate bidirectional predictability, with MSFT→AAPL being statistically stronger (p=0.0002)."</p>
+</blockquote>
+<p><strong>Claim 4: Simple models suffice</strong></p>
+<blockquote>
+<p>"XGBoost with 6 features outperforms 2-layer LSTM (MSE 0.50 vs 0.98), demonstrating that OFI prediction does not benefit from complex sequence modeling."</p>
+</blockquote>
+<h3 id="72-limitations">7.2 Limitations</h3>
+<ol>
+<li><strong>OFI → OFI, not OFI → returns</strong>: Current analysis predicts order flow, not prices</li>
+<li><strong>Two assets only</strong>: Results may not generalize across sectors</li>
+<li><strong>Single year</strong>: 2023 market conditions may be specific</li>
+</ol>
+<h3 id="73-next-steps-pending-wrds-connection">7.3 Next Steps (Pending WRDS Connection)</h3>
+<ol>
+<li>Extract midquote returns for actual return prediction</li>
+<li>Compare: Price-only vs OFI-only vs Price+OFI for return prediction</li>
+<li>Test if OFI adds alpha over price for trading signals</li>
+</ol>
+<hr />
+<h2 id="8-repository-structure">8. Repository Structure</h2>
+<pre><code>noah_ofi_local/
+├── src/
+│   ├── utils.py              # Shared utilities
+│   ├── wrds_extract.py       # Sequential OFI extraction
+│   ├── wrds_parallel.py      # Parallel OFI extraction
+│   ├── build_dataset.py      # Original dataset builder
+│   ├── build_dataset_v2.py   # Leak-free version
+│   ├── train_xgb.py          # XGBoost training
+│   ├── train_lstm.py         # LSTM training
+│   ├── eval.py               # Model evaluation
+│   ├── ablation_tests.py     # Feature ablation
+│   ├── cross_asset.py        # Cross-asset analysis
+│   ├── ofi_returns.py        # OFI-level prediction
+│   ├── extract_returns.py    # Return extraction (parallel)
+│   ├── extract_returns_seq.py # Return extraction (sequential)
+│   └── return_prediction.py  # Price vs OFI experiment
+├── data/
+│   ├── raw/                  # 500 parquet files
+│   └── processed/            # Processed datasets
+├── outputs/
+│   ├── models/               # Trained model files
+│   └── metrics/              # JSON result files
+├── Makefile                  # CLI automation
+├── requirements.txt          # Dependencies
+└── README.md                 # Documentation
+</code></pre>
+<hr />
+<h2 id="9-reproducibility">9. Reproducibility</h2>
+<h3 id="91-environment-setup">9.1 Environment Setup</h3>
+<pre><code class="language-bash">python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+</code></pre>
+<h3 id="92-running-the-pipeline">9.2 Running the Pipeline</h3>
+<pre><code class="language-bash"># Extract OFI (requires WRDS credentials)
+python src/wrds_parallel.py --year 2023 --tickers AAPL,MSFT
+
+# Build dataset
+python src/build_dataset_v2.py
+
+# Train models
+python src/train_xgb.py
+python src/train_lstm.py
+
+# Run ablation tests
+python src/ablation_tests.py
+
+# Run cross-asset analysis
+python src/cross_asset.py
+</code></pre>
+<h3 id="93-wrds-credentials">9.3 WRDS Credentials</h3>
+<p>Username: rkk5541
+Connection: wrds-pgdata.wharton.upenn.edu:9737</p>
+<hr />
+<h2 id="10-appendix-key-metrics-summary">10. Appendix: Key Metrics Summary</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Total bars extracted</td>
+<td>77,996</td>
+<td>WRDS TAQM</td>
+</tr>
+<tr>
+<td>XGBoost test correlation</td>
+<td>70.65%</td>
+<td>train_xgb.py</td>
+</tr>
+<tr>
+<td>XGBoost directional accuracy</td>
+<td>79.16%</td>
+<td>train_xgb.py</td>
+</tr>
+<tr>
+<td>LSTM test correlation</td>
+<td>15.26%</td>
+<td>train_lstm.py</td>
+</tr>
+<tr>
+<td>Lag-1 autocorrelation (AAPL)</td>
+<td>56.53%</td>
+<td>ablation_tests.py</td>
+</tr>
+<tr>
+<td>Lag-1 autocorrelation (MSFT)</td>
+<td>56.97%</td>
+<td>ablation_tests.py</td>
+</tr>
+<tr>
+<td>AAPL-MSFT contemporaneous corr</td>
+<td>35.33%</td>
+<td>cross_asset.py</td>
+</tr>
+<tr>
+<td>MSFT→AAPL Granger p-value</td>
+<td>0.0002</td>
+<td>cross_asset.py</td>
+</tr>
+<tr>
+<td>AAPL→MSFT Granger p-value</td>
+<td>0.0272</td>
+<td>cross_asset.py</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<p><em>Report generated: January 6, 2026</em></p>
+</body>
+</html>
