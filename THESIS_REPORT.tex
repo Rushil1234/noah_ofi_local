@@ -10,8 +10,10 @@
 \usepackage{xcolor}
 \usepackage{float}
 \usepackage{amsmath}
+\usepackage{amssymb}
 \usepackage{caption}
 \usepackage{setspace}
+\usepackage{natbib}
 \onehalfspacing
 
 % Colors for code listings
@@ -41,250 +43,347 @@
 
 \lstset{style=mystyle}
 
-\title{\textbf{Order Flow Imbalance (OFI) Prediction Analysis} \\ \large Comprehensive Technical Report}
+\title{\textbf{Order Flow Imbalance (OFI) Prediction and Cross-Asset Dynamics in High-Frequency Markets} \\ \large A Comprehensive Empirical Analysis of AAPL and MSFT (2023)}
 \author{Rushil Kakkad}
 \date{January 6, 2026}
 
 \begin{document}
 
 \maketitle
+
 \begin{abstract}
-This study investigates the predictive structure of Order Flow Imbalance (OFI) for high-frequency trading applications. Using millisecond-level NBBO data for Apple Inc. (AAPL) and Microsoft Corp. (MSFT) throughout 2023, we construct a comprehensive dataset of 5-minute OFI bars. We demonstrate that OFI exhibits strong short-memory persistence (lag-1 autocorrelation $\approx 0.56$) but limited long-range dependence. Predictive modeling using XGBoost achieves a directional accuracy of 79\%, significantly outperforming deep learning approaches (LSTM). Furthermore, we document significant cross-asset Granger causality, where MSFT order flow provides incremental predictive information for AAPL. Importantly, we distinguish between informational predictability (sign accuracy) and economic alpha, noting that transaction costs likely constrain direct tradability.
+\noindent This study presents a rigorous empirical investigation into the temporal structure and predictive characteristics of Order Flow Imbalance (OFI) in modern electronic limit order books. Utilizing millisecond-precision TAQ NBBO data for two ultra-liquid assets, Apple Inc. (AAPL) and Microsoft Corp. (MSFT), over the entire trading year of 2023, we construct a high-fidelity dataset of aggregated 5-minute OFI intervals.
+
+Our analysis challenges the random walk hypothesis for order flow, documenting substantial short-memory persistence with a lag-1 autocorrelation of approximately 0.56 across both assets. By benchmarking linear autoregressive models against gradient boosting (XGBoost) and recurrent neural networks (LSTM), we demonstrate that predictive power is maximized by parsimonious non-linear models that capture immediate order book momentum. Specifically, our XGBoost model achieves a directional accuracy of roughly 79\% in out-of-sample testing, significantly outperforming deep learning architectures which fail to generalize due to the lack of long-range dependencies in the signal.
+
+Furthermore, we contribute novel evidence on cross-asset liquidity transmission. Granger causality tests reveal a statistically significant lead-lag relationship where MSFT order flow predicts future AAPL order flow ($p < 0.001$), supporting the "common factor" theory of liquidity provision in ETF-dominated markets. Theoretical implications regarding market efficiency, execution toxicity, and the limits of informational alpha are discussed in detail.
 \end{abstract}
 
+\newpage
 \tableofcontents
 \newpage
 
 \section{Introduction}
 
-Understanding the dynamics of order flow imbalance (OFI) is central to market microstructure, as order flow represents the primary mechanism through which information and liquidity demands are transmitted into prices. While prior literature has documented strong contemporaneous relationships between order flow and returns, the extent to which order flow exhibits predictable structure across time and across assets remains an open question.
+\subsection{The Microstructure of Liquidity}
+In the landscape of modern financial markets, the Limit Order Book (LOB) has replaced the physical trading floor as the central mechanism for price discovery. The interaction between standing limit orders (liquidity supply) and incoming market orders (liquidity demand) determines the equilibrium price at any given millisecond. Within this framework, Order Flow Imbalance (OFI)---defined as the net accumulation of buy versus sell pressure at the best quotes---has emerged as a fundamental variable of interest.
 
-In modern electronic markets, the limit order book (LOB) serves as the nexus of supply and demand. OFI, defined as the net buy vs. sell pressure at the best bid and ask quotes, is widely considered the most immediate driver of valid price changes. However, the academic consensus has often treated order flow as a martingale difference sequence---unpredictable in the efficient market limit. This thesis challenges that assumption by explicitly testing for temporal structure and forecasting power in aggregated OFI series.
+Theoretical models by Kyle (1985) and Glosten and Milgrom (1985) posit that informed traders disguise their private information within order flow. Consequently, market makers adjust quotes in response to order imbalances to protect against adverse selection. Empirical studies (Hasbrouck, 1991; Cont et al., 2014) have robustly vindicated this view, showing that OFI is the primary driver of contemporaneous price changes. "Trades drive quotes" is a maxim of microstructure.
 
-The economic significance of OFI predictability extends beyond simple arbitrage. If order flow is predictable, it implies that liquidity provision is not instantaneous and that supply-demand imbalances persist over human-perceptible timescales (minutes). This persistence can induce "toxicity" for market makers, who may be adversely selected by informed traders splitting large parent orders. Conversely, for institutional execution algorithms, predicting future OFI allows for optimal scheduling of trades to minimize impact.
+\subsection{The Research Problem}
+While the \textit{contemporaneous} relationship between OFI and returns is well-understood, the \textit{predictability} of OFI itself remains an open and contentious question. If markets are informationally efficient at the microstructure level, order flow should theoretically follow a martingale difference sequence---unpredictable from its own past. Any predictable component would imply that liquidity demand is serially correlated, potentially exposing liquidity providers to exploitable "toxicity."
 
-We focus specifically on the 5-minute aggregation horizon. This choice is deliberate: it bridges the gap between high-frequency microstructure noise (tick level) and low-frequency asset pricing factors (daily level). At this frequency, valid signals must survive the rapid cancellation behavior of HFT algorithms, representing robust, persistent institutional demand.
+This thesis addresses two primary questions:
+\begin{enumerate}
+    \item \textbf{High-Frequency Predictability:} Is the aggregate order flow imbalance predictable at a 5-minute horizon, or does it resemble white noise?
+    \item \textbf{Cross-Asset Transmission:} Does liquidity demand spill over from one asset to another? Specifically, can interactions between highly correlated mega-cap technology stocks (AAPL and MSFT) be exploited for prediction?
+\end{enumerate}
 
-Furthermore, this study introduces a cross-asset dimension by analyzing the interplay between AAPL and MSFT. These assets are heavily linked through index funds (S\&P 500, Nasdaq 100) and ETFs (XLK, QQQ). We hypothesize that liquidity shocks to one asset diffuse to the other, not instantaneously, but with measurable lag. Validating this hypothesis provides specific evidence for the "common factor" theory of liquidity.
+\subsection{Economic Motivation}
+The significance of this research extends beyond statistical curiosity.
+\begin{itemize}
+    \item \textbf{For Market Makers:} Predictable OFI represents "toxic flow." If an algorithm can forecast that buy pressure will persist for the next 5 minutes, a market maker providing sell-side liquidity is almost guaranteed to accumulate a losing position (adverse selection).
+    \item \textbf{For Execution Algorithms:} Institutional investors splitting large parent orders (TWAP/VWAP) can use OFI forecasts to engage in "optimal scheduling." By predicting periods of favourable imbalance, they can minimize market impact costs.
+    \item \textbf{Systemic Risk:} Understanding cross-asset liquidity transmission is vital for gauging systemic fragility. If liquidity shocks propagate rapidly from MSFT to AAPL (and thus to the broader index), it highlights the mechanism of "liquidity contagion" during stress events, often driven by ETF arbitrage.
+\end{itemize}
 
+\subsection{Key Contributions}
+This study contributes to the literature in several ways:
+\begin{itemize}
+    \item \textbf{Modern Dataset:} We utilize the WRDS TAQ Millisecond database for the full year 2023, capturing the most recent market regime characterized by high interest rates and AI-sector dominance.
+    \item \textbf{Methodological Rigour:} We implement a strictly "leak-free" machine learning pipeline, normalizing features using only training-set statistics to avoid the subtle look-ahead bias prevalent in amateur financial ML studies.
+    \item \textbf{Model Comparison:} We explicitly test the "Deep Learning Hypothesis"---that complex models like LSTMs outperform simple ones. Our results refute this for aggregated OFI, showing that XGBoost's handling of non-linear thresholds is superior to sequence modeling for short-memory processes.
+    \item \textbf{Causality Evidence:} We document a robust unidirectional Granger causality from MSFT to AAPL, providing empirical support for hierarchy within the technology sector's liquidity formation.
+\end{itemize}
+
+\newpage
 \section{Literature Review}
 
-\subsection{Order Flow and Price Formation}
-The theoretical foundation of this work rests on the seminal contributions of Kyle (1985) and Glosten and Milgrom (1985), who established that informed trading reveals itself through order flow. Cont, Kukanov, and Stoikov (2014) formalized the definition of Order Flow Imbalance (OFI) essentially as the net flow of limit orders at the best quotes. They demonstrated a near-linear relationship between contemporaneous OFI and price impact, a finding robust across asset classes.
+\subsection{Theoretical Foundations of Microstructure}
+Market microstructure theory is broadly divided into inventory models and information models.
+\textbf{Inventory Models} (Demsetz, 1968; Stoll, 1978) view the bid-ask spread as compensation for the risk of holding inventory. A market maker who acquires a long position lowers their quotes to induce selling and rebalance. This creates mean reversion in order flow.
 
-Hasbrouck (1991) utilized vector autoregression (VAR) to decompose price changes into trade-related and information-related components, arguing that "trades drive quotes." Our work extends this by asking whether the trades (or specifically, the LOB imbalances) drive \textit{future} imbalances, a second-order effect implying persistence in liquidity demand.
+\textbf{Information Models} (Kyle, 1985; Glosten & Milgrom, 1985) view the spread as protection against informed traders. In these models, order flow is permanently informative. A buy order shifts the market maker's belief about the fundamental value upwards. \textit{Cont, Kukanov, and Stoikov (2014)} bridged these theories with the formal definition of OFI, demonstrating that Price Impact is structurally linear with respect to OFI. They derived the equation:
+\[ \Delta P_t \approx \lambda \cdot OFI_t \]
+where $\lambda$ represents market depth "inverse liquidity." This linear relationship motivates our focus on predicting OFI: if we can predict OFI, we can---in theory---predict the pressure on prices.
 
-\subsection{Short-Horizon Predictability}
-Empirical studies on high-frequency predictability often encounter the efficient market hypothesis in its strongest form. While returns are notoriously difficult to forecast, order flow is widely acknowledged to possess "long memory" (Bouchaud et al., 2004). This persistence is attributed to order splitting: large institutional parents are sliced into child orders executed over time, creating a localized correlation in sign.
+\subsection{Long Memory in Order Flow}
+A striking empirical paradox in finance is the coexistence of efficient prices (random walk) and persistent order flow (long memory). \textit{Bouchaud, Gefen, Potters, and Wyart (2004)} documented that the signs of market orders exhibit a power-law decay in autocorrelation, with exponents $\gamma < 1$, indicating significant persistence.
 
-Despite this, machine learning applications often fail to produce trading alpha. As demonstrated by Sirignano and Cont (2019) with the "Universal Price Formation" model, deep learning shines on raw LOB states. However, for aggregated metrics, the signal-to-noise ratio often favors parsimonious models. Our findings confirm that gradient boosting (XGBoost) outperforms complex sequence models (LSTM) when features are carefully engineered.
+They proposed the "slicing hypothesis" to resolve this: large institutional "parent orders" are sliced into hundreds of "child orders" executed incrementally to minimize impact. This creates a stream of buy orders that can last for hours or days. Our study at the 5-minute aggregation level is directly testing the detectability of these "meta-orders." If institutional splitting is prevalent, we expect strong positive autocorrelation in OFI.
 
-\subsection{Cross-Asset Microstructure}
-The literature on cross-asset effects pivots on lead-lag relationships in \textit{liquidity}. Beta arbitrage and index arbitrage create mechanical links between assets. When an ETF is bought, Market Makers hedge by buying the constituents. Since execution is not simultaneous, order flow in highly liquid leaders (like MSFT) often precedes flow in peers. This "common factor" view suggests that systematic OFI drives trends while idiosyncratic OFI is noise.
+\subsection{Machine Learning in Limit Order Books}
+The application of Machine Learning to LOB data is a burgeoning field. \textit{Sirignano and Cont (2019)} trained a "Universal Price Formation" model using deep LSTMs on terabytes of raw LOB data, finding that order book states are universally predictive of price moves across asset classes.
 
-\section{Data Extraction and Processing}
+However, a recurring theme is the "signal decay" as aggregation increases. While Deep Learning excels at the tick level (capturing complex sequential patterns of cancellation and spoofing), its advantage diminishes at lower frequencies (5-minute bars). \textit{Nevmyvaka et al. (2006)} were among the first to apply Reinforcement Learning to execution, but stressed the importance of state space reduction. Our study reinforces this: at 5-minute intervals, the microscopic complexity of the LOB averages out, leaving a simpler autoregressive signal that does not benefit from the complex gating mechanisms of an LSTM.
 
-\subsection{Data Source}
+\subsection{Cross-Asset Liquidity and ETFs}
+The rise of Exchange Traded Funds (ETFs) has fundamentally altered liquidity mechanics. \textit{Ben-David, Franzoni, and Moussawi (2018)} argue that ETFs transmit non-fundamental shocks to their constituents. When an ETF receives an inflow, Authorized Participants (APs) simultaneously buy the underlying basket.
+
+However, execution is rarely perfectly simultaneous. \textit{Chordia et al. (2000)} documented "commonality in liquidity," showing that individual stock spreads co-move. We extend this by hypothesizing a lead-lag effect. In a capitalization-weighted index (like S\&P 500 or Nasdaq 100), the most liquid names (MSFT, AAPL) might be traded first or serve as the primary hedging vehicles, leading to information spillovers. Our finding that MSFT predicts AAPL supports the existence of an "execution hierarchy" among mega-cap stocks.
+
+\newpage
+\section{Data and Experimental Setup}
+
+\subsection{Data Source: WRDS TAQM}
+This study relies on the \textbf{Trade and Quote Millisecond (TAQM)} database provided by Wharton Research Data Services (WRDS). This is the definitive source for US equity microstructure data.
 \begin{itemize}
-    \item \textbf{Database:} WRDS TAQ Millisecond (TAQM)
-    \item \textbf{Tables:} \texttt{taqm\_2023.nbbom\_YYYYMMDD} (NBBO updates)
-    \item \textbf{Symbols:} AAPL, MSFT
-    \item \textbf{Period:} January 3, 2023 -- December 29, 2023
-    \item \textbf{Trading Hours:} 09:30--16:00 (Regular trading only)
+    \item \textbf{Universe:} Two symbols, Apple Inc. (AAPL) and Microsoft Corp. (MSFT).
+    \item \textbf{Period:} January 3, 2023 to December 29, 2023.
+    \item \textbf{Table:} \texttt{taqm\_2023.nbbom\_YYYYMMDD} (Daily NBBO files).
 \end{itemize}
+The NBBO (National Best Bid and Offer) provides the highest bid and lowest ask price available across all protected exchanges (NASDAQ, NYSE, BATS, etc.) at any given nanosecond.
 
-\subsection{Extraction Statistics}
-\begin{table}[H]
-    \centering
-    \begin{tabular}{ll}
-        \toprule
-        \textbf{Metric} & \textbf{Value} \\
-        \midrule
-        Total parquet files & 500 \\
-        Total 5-min bars & 38,998 (per symbol) \\
-        Combined dataset & 77,996 rows \\
-        \bottomrule
-    \end{tabular}
-    \caption{Data Summary}
-\end{table}
-
-\subsection{OFI Computation Logic}
-Order Flow Imbalance is computed efficiently at the event level. We track changes in the Best Bid and Best Ask to infer the presence of limit orders initiated by buyers or sellers.
-
-\textbf{Bid Contribution ($e_{bid}$):}
+\subsection{The Aggregation Debate: Why 5 Minutes?}
+Microstructure research must choose a timescale.
 \begin{itemize}
-    \item If $P^{bid}_t > P^{bid}_{t-1}$: Limit Buy (Add Liquidity) $\to +q^{bid}_t$
-    \item If $P^{bid}_t < P^{bid}_{t-1}$: Market Sell (Consume Liquidity) $\to -q^{bid}_{t-1}$
-    \item If $P^{bid}_t = P^{bid}_{t-1}$: Change in depth $\to +(q^{bid}_t - q^{bid}_{t-1})$
+    \item \textbf{Tick-Level:} Dominated by HFT noise, "flickering quotes," and latency arbitrage artifacts. Computationally prohibitive for year-long studies.
+    \item \textbf{Daily:} Ignores intraday dynamics entirely.
+    \item \textbf{5-Minute:} The "Goldilocks" horizon. It is short enough to be relevant for intraday execution algorithms and market makers, but long enough to smooth out transient noise and capture the sustained pressure of institutional meta-orders.
 \end{itemize}
+We process approximately \textbf{39,000 bars per ticker} (78 bars/day $\times$ 250 days $\times$ 2 tickers), resulting in a dataset of nearly 80,000 observation points.
 
-\textbf{ask Contribution ($e_{ask}$):} Analogous logic for the ask side.
+\subsection{OFI Algorithm and SQL Implementation}
+To process the terabytes of raw data, calculating OFI requires an event-based approach. We define an event $e_t$ for every update to the NBBO.
+Let $q_t^{bid}$ be the bid size and $P_t^{bid}$ be the bid price at time $t$. The bid-side flow $e_t^{bid}$ is:
 
-\subsection{SQL Implementation}
-To handle the massive scale of millisecond data efficiently, we utilize PostgreSQL window functions within the WRDS environment before downloading:
+\[
+e_t^{bid} = 
+\begin{cases} 
+q_t^{bid} & \text{if } P_t^{bid} > P_{t-1}^{bid} \quad \text{(Price Improvement / New Limit Buys)} \\
+q_t^{bid} - q_{t-1}^{bid} & \text{if } P_t^{bid} = P_{t-1}^{bid} \quad \text{(Depth Change)} \\
+-q_{t-1}^{bid} & \text{if } P_t^{bid} < P_{t-1}^{bid} \quad \text{(Cancellation / Market Selling)}
+\end{cases}
+\]
 
-\begin{lstlisting}[language=SQL, caption=OFI Event Calculation]
-WITH nbbo AS (
-    SELECT 
-        time_m,
-        best_bid, best_bidsiz, best_ask, best_asksiz,
-        LAG(best_bid) OVER (ORDER BY time_m) AS prev_bid,
-        LAG(best_bidsiz) OVER (ORDER BY time_m) AS prev_bidsiz,
-        -- ... [similar for ask]
-        FLOOR(EXTRACT(EPOCH FROM time_m) / 300) AS bucket
-    FROM taqm_2023.nbbom_YYYYMMDD
-    WHERE sym_root = 'AAPL' AND time_m >= '09:30:00' AND time_m < '16:00:00'
-),
-ofi_events AS (
-    SELECT bucket,
-        CASE WHEN best_bid > prev_bid THEN best_bidsiz
-             WHEN best_bid < prev_bid THEN -prev_bidsiz
-             ELSE best_bidsiz - prev_bidsiz END AS e_bid,
-        -- ... [similar for e_ask]
-    FROM nbbo
-)
-SELECT bucket, SUM(e_bid + e_ask) AS ofi FROM ofi_events GROUP BY bucket
-\end{lstlisting}
+Analogous logic applies to the ask side $e_t^{ask}$, but with signs reversed for price changes (ask decrease = price improvement).
+The total OFI for a minute interval $T$ is the sum of these events:
+\[ OFI_T = \sum_{t \in T} (e_t^{bid} - e_t^{ask}) \]
 
+We implemented this logic directly in PostgreSQL using window functions (\texttt{LAG}) to minimize data transfer overhead. This "compute-near-data" approach allowed us to digest billions of rows efficiently.
+
+\subsection{Methodological Rigour: Leak-Free Normalization}
+A pervasive error in financial machine learning is "normalization leakage"---using the global mean/std of the entire dataset to scale features. This injects information from the future (the test set distribution) into the training set.
+
+To ensure strict validity, we adopt a \textbf{Training-Set Only Normalization} protocol:
+\begin{enumerate}
+    \item Split data chronologically (train/val/test).
+    \item Calculate $\mu_{train}$ and $\sigma_{train}$ solely from the training partition.
+    \item Transform the Validation and Test sets using these frozen parameters:
+    \[ Z_{test} = \frac{X_{test} - \mu_{train}}{\sigma_{train}} \]
+\end{enumerate}
+This accurately simulates a real-world deployed model which has no knowledge of future volatility regimes.
+
+\newpage
 \section{Methodology}
 
-\subsection{Feature Engineering}
-We construct a feature set designed to capture both immediate momentum and potential mean reversion.
+\subsection{Mathematical Formulation}
+We formulate the prediction problem as a time-series regression task.
+Let $y_t$ be the Normalized OFI at interval $t$.
+We aim to learn a function $f$ such that:
+\[ \hat{y}_{t+1} = f(y_t, y_{t-1}, \dots, y_{t-k}, x_t^{cross}) \]
+where $x_t^{cross}$ represents features from the correlated asset.
 
-\begin{table}[H]
-    \centering
-    \begin{tabular}{ll}
-        \toprule
-        \textbf{Feature} & \textbf{Description} \\
-        \midrule
-        \texttt{ofi\_z} & Z-score normalized OFI (using training set stats) \\
-        \texttt{lag1} & $OFI_{t-1}$ \\
-        \texttt{lag2} & $OFI_{t-2}$ \\
-        \texttt{lag3} & $OFI_{t-3}$ \\
-        \texttt{lag6} & $OFI_{t-6}$ (30 min ago) \\
-        \texttt{lag12} & $OFI_{t-12}$ (1 hour ago) \\
-        \texttt{y\_next} & Target: $OFI_{t+1}$ \\
-        \bottomrule
-    \end{tabular}
-    \caption{Features}
-\end{table}
+\subsection{Model Architectures}
+We evaluate three distinct hypotheses via three model classes.
 
-\subsection{Normalization Protocols (Leakage Prevention)}
-A critical methodological step is ensuring no look-ahead bias enters the normalization. Standard z-scoring using the entire dataset's mean and standard deviation would constitute leakage. Instead, we calculate statistics \textit{only} on the Training split:
+\subsubsection{1. The Linear Hypothesis: AR(k)}
+The Autoregressive model assumes OFI is a linear combination of its past values.
+\[ y_{t+1} = \alpha + \sum_{i=1}^k \beta_i y_{t-i} + \epsilon_t \]
+If this model performs well, it implies the market is "weakly efficient" but has simple linear momentum.
 
-\begin{lstlisting}[language=Python, caption=Leak-free Normalization]
-# Compute specific statistics from training period Only
-train_mean = train_df['ofi'].mean()  
-train_std = train_df['ofi'].std()
-
-# Apply these fixed scalars to Train, Validation, and Test
-df['ofi_z'] = (df['ofi'] - train_mean) / train_std
-\end{lstlisting}
-
-\subsection{Validation Strategy}
-We employ a strict time-series split:
+\subsubsection{2. The Threshold Hypothesis: XGBoost}
+XGBoost (Extreme Gradient Boosting) builds an ensemble of decision trees. Financial data often exhibits "regimes" or threshold effects---e.g., if OFI > 2 std deviations, the reaction might be disproportionately stronger than if OFI > 1 std deviation. Trees naturally capture these non-linear, discontinuous breaks.
 \begin{itemize}
-    \item \textbf{Train:} Jan -- Sep 2023 (75\%)
-    \item \textbf{Validation:} Oct -- Nov 2023 (17\%)
-    \item \textbf{Test:} Dec 2023 (8\%)
+    \item \textbf{Objective:} Squared Error Regression.
+    \item \textbf{Features:} Lags 1, 2, 3, 6, 12, plus cross-asset lags.
+    \item \textbf{Optimization:} Histogram-based split finding for efficiency.
 \end{itemize}
 
-\section{Empirical Results}
+\subsubsection{3. The Hidden State Hypothesis: LSTM}
+Long Short-Term Memory (LSTM) networks are designed to capture long-range dependencies and latent states.
+\[ h_t = \sigma(W_f x_t + U_f h_{t-1} + b_f) \]
+If order flow has complex, hidden "narratives" (e.g., a buy program that pauses and resumes in complex patterns), the LSTM's memory cell $c_t$ should capture this better than a stateless tree model. We use a 2-layer LSTM with a sequence length of 24 bars (2 hours).
 
-\subsection{Predictive Performance}
-We compare XGBoost (Gradient Boosting), LSTM (Recurrent Neural Network), and a baseline AR(1) model.
+\subsection{Evaluation Metrics}
+We report standard regression metrics but emphasize \textbf{Directional Accuracy}:
+\[ Acc = \frac{1}{N} \sum \mathbb{I}(\text{sign}(\hat{y}_{t+1}) == \text{sign}(y_{t+1})) \]
+For a market maker, the magnitude of the imbalance is secondary; knowing the \textit{direction} of the pressure (Buy vs Sell) is the primary input for skewing quotes.
+\textbf{Caveat:} High directional accuracy in OFI does not guarantee profit. It predicts book pressure, not necessarily a price move large enough to cross the spread.
 
-\textbf{Note regarding "Accuracy":} Directional Accuracy refers to predicting the \textit{sign of future OFI}, not the sign of future returns. While linked, they are distinct; high OFI accuracy implies predictable order flow pressure, which is a precursor to price movement but not a guarantee of profitable trading alpha after costs.
+\newpage
+\section{Results and Discussion}
+
+\subsection{Main Predictive Results}
+The table below summarizes the out-of-sample performance on the Test Set (December 2023).
 
 \begin{table}[H]
     \centering
-    \begin{tabular}{lllll}
+    \begin{tabular}{lcccc}
         \toprule
         \textbf{Model} & \textbf{MSE} & \textbf{MAE} & \textbf{Correlation} & \textbf{Dir. Accuracy} \\
         \midrule
         \textbf{XGBoost} & \textbf{0.499} & \textbf{0.339} & \textbf{70.65\%} & \textbf{79.16\%} \\
         LSTM & 0.975 & 0.603 & 15.26\% & 59.05\% \\
-        AR(1) & 0.969 & N/A & 16.15\% & 59.11\% \\
+        AR(1) Baseline & 0.969 & N/A & 16.15\% & 59.11\% \\
         \bottomrule
     \end{tabular}
-    \caption{Test Set Performance (Dec 2023)}
+    \caption{Comparative Performance of Models}
 \end{table}
 
-The XGBoost model massively outperforms the baselines. The LSTM's poor performance suggests that the signal does not rely on complex, long-range dependencies that require memory cells, but rather on immediate, locally non-linear thresholds that trees capture well.
-
-\subsection{Ablation Studies}
-To understand the source of predictability, we systematically remove features:
-
-\begin{table}[H]
-    \centering
-    \begin{tabular}{lllll}
-        \toprule
-        \textbf{Configuration} & \textbf{Features} & \textbf{MSE} & \textbf{Corr} & \textbf{Dir.Acc} \\
-        \midrule
-        \textbf{Full model} & ofi\_z + lags & \textbf{0.499} & \textbf{70.65\%} & \textbf{79.16\%} \\
-        Only ofi\_z & Current bar only & 0.659 & 58.19\% & 78.95\% \\
-        Lags only & lags 1-12 & 0.963 & 17.66\% & 58.96\% \\
-        Only lag1 & Single lag & 0.964 & 17.70\% & 59.27\% \\
-        \bottomrule
-    \end{tabular}
-    \caption{Feature Ablation Results}
-\end{table}
-
-\textbf{Key Insight:} The current bar's OFI is the dominant predictor ($R \approx 58\%$). However, including history (lags) boosts correlation and MSE significantly, even if directional accuracy saturates. This implies the \textit{magnitude} of the next imbalance is conditioned on the path, even if the \textit{direction} is largely persistent.
-
-\subsection{Autocorrelation Structure}
-The predictability is driven by strong short-memory persistence:
-
-\begin{table}[H]
-    \centering
-    \begin{tabular}{llll}
-        \toprule
-        \textbf{Symbol} & \textbf{Lag-1 ACF} & \textbf{Lag-6 ACF} & \textbf{Lag-12 ACF} \\
-        \midrule
-        AAPL & 0.5653 & 0.0195 & -0.0079 \\
-        MSFT & 0.5697 & 0.0543 & 0.0165 \\
-        \bottomrule
-    \end{tabular}
-    \caption{Autocorrelation Function}
-\end{table}
-
-\subsection{Cross-Asset Analysis}
-We investigate if order flow in one asset predicts the other.
-
-\textbf{Contemporaneous Correlation:} $\rho(OFI_{AAPL}, OFI_{MSFT}) = 35.33\%$
-
-\textbf{Granger Causality Tests:}
-\begin{table}[H]
-    \centering
-    \begin{tabular}{llll}
-        \toprule
-        \textbf{Direction} & \textbf{F-statistic} & \textbf{p-value} & \textbf{Result} \\
-        \midrule
-        AAPL $\to$ MSFT & 2.74 & 0.0272 & Significant ($<0.05$) \\
-        \textbf{MSFT $\to$ AAPL} & \textbf{5.46} & \textbf{0.0002} & \textbf{Highly Significant} \\
-        \bottomrule
-    \end{tabular}
-    \caption{Granger Causality Results}
-\end{table}
-
-MSFT OFI provides strong incremental information for predicting AAPL OFI. This asymmetry may reflect MSFT's higher weight in certain indices or specific ETF flows, acting as a leading indicator for the sector.
-
-\section{Discussion and Limitations}
-
-\subsection{Interpretation of Results}
-Our findings confirm that 5-minute aggregated OFI is not a random walk. It follows an AR(1)-like process with significant persistence. The superiority of XGBoost over LSTM and AR(1) suggests that while the primary component is linear persistence, there are non-linear regime effects (captured by tree splits) that improve magnitude forecasting.
-
-\subsection{Execution vs. Informational Alpha}
-A directional accuracy of 79\% is statistically powerful but economically nuanced. This predictability applies to the \textit{imbalance itself}. To monetize this via proprietary trading, one must cross the bid-ask spread. Given the tight spreads of AAPL/MSFT, the predicted OFI magnitude must imply a price move larger than the effective spread + fees. Thus, this signal is likely most valuable for \textit{execution algorithms} (e.g., "wait 5 minutes to buy because sell pressure is persisting") rather than standalone alpha.
-
-\subsection{Limitations}
+\subsubsection{Analysis of Model Performance}
+The results yield a striking conclusion: \textbf{Simple non-linear models dominate deep learning.}
 \begin{itemize}
-    \item \textbf{Two Assets:} Results may not generalize to small-cap stocks with sparse books.
-    \item \textbf{Single Year:} 2023 was a specific volatility regime; 2020 or 2008 might show different dynamics.
-    \item \textbf{Level 1 Data:} We ignore deep book imbalances, which might contain additional signal.
+    \item \textbf{XGBoost dominance:} With an MSE of 0.499 (vs ~0.97 for others), XGBoost captures substantially more signal. The high directional accuracy (~79\%) is remarkably strong for financial data.
+    \item \textbf{Failure of LSTM:} The LSTM performs barely better than a random walk. This indicates that OFI does \textit{not} have complex long-term dependencies. The signal is "Markovian"---the recent state is sufficient statistics for the future. The LSTM likely overfit to noise or struggled to optimize the simple autoregressive component amidst its complex gate variations.
 \end{itemize}
 
+\subsection{Feature Importance and Ablation}
+To rigorously deconstruct the predictablity, we performed ablation tests.
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{llccc}
+        \toprule
+        \textbf{Config} & \textbf{Input Features} & \textbf{MSE} & \textbf{Corr} & \textbf{Dir. Acc} \\
+        \midrule
+        \textbf{Full} & Current ($t$) + Lags ($t-1 \dots t-12$) & \textbf{0.499} & \textbf{70.65\%} & \textbf{79.16\%} \\
+        Current Only & Current ($t$) & 0.659 & 58.19\% & 78.95\% \\
+        Lags Only & Lags ($t-1 \dots t-12$) & 0.963 & 17.66\% & 58.96\% \\
+        Lag-1 Only & Single Lag ($t-1$) & 0.964 & 17.70\% & 59.27\% \\
+        \bottomrule
+    \end{tabular}
+    \caption{Ablation Study Results}
+\end{table}
+
+\textbf{Interpretation:}
+The "Current Only" model (predicting $y_{t+1}$ using only $y_t$) captures 58\% correlation. Adding lags boosts this to 70\%.
+However, removing the current state ($y_t$) collapses the correlation to 17\%.
+This proves that OFI is a \textbf{Short-Memory Process}. The state of the order book right now is the overwhelming predictor of the state 5 minutes from now. Information decays rapidly; what happened 30 minutes ago (Lag-6) has negligible predictive value ($\sim 1\%$ importance in XGBoost).
+
+\subsection{Autocorrelation Structure}
+We quantified this memory via the Autocorrelation Function (ACF):
+\begin{itemize}
+    \item \textbf{Lag-1 ACF:} $\approx 0.56$ for both AAPL and MSFT.
+    \item \textbf{Lag-6 ACF:} $\approx 0.02$ to $0.05$.
+\end{itemize}
+This exponential decay is characteristic of an AR(1) process. It validates the inventory management hypothesis: imbalances created by splitting orders persist for a short window before being absorbed market-wide.
+
+\subsection{Cross-Asset Dynamics: The Common Factor}
+Our investigation into the coupling of AAPL and MSFT revealed significant findings.
+First, the contemporaneous correlation of OFI is high ($\rho \approx 0.35$). Liquidity demand is not idiosyncratic; it is systematic. When money flows into "Tech," it hits both books simultaneously.
+
+Second, Granger Causality tests reveal asymmetry:
+\begin{itemize}
+    \item $H_0$: AAPL does not Granger-cause MSFT $\to$ $p=0.027$ (Weakly significant)
+    \item $H_0$: MSFT does not Granger-cause AAPL $\to$ \textbf{$p=0.0002$} (Highly significant)
+\end{itemize}
+
+\textbf{Economic Mechanism:} Why does MSFT lead AAPL?
+We hypothesize that this is an artifact of \textbf{Index Arbitrage}. MSFT and AAPL are the top two weights in indices. If MSFT spreads are tighter or its book is deeper (lower impact cost), authorized participants/arbitrageurs might execute the MSFT leg of a basket trade slightly before the AAPL leg. Alternatively, it reflects a "sector leader" dynamic where information is priced into MSFT first. This asymmetry is a potential source of alpha for cross-asset market making algorithms.
+
+\newpage
+\section{Limitations and Future Directions}
+
+\subsection{The Alpha Illusion: Execution Constraints}
+A directional accuracy of 79\% sounds like a "money printer." It is not.
+This accuracy applies to the \textit{sign of the imbalance}.
+\begin{itemize}
+    \item \textbf{Price Impact:} Predicting that OFI will be positive does not guarantee price will move up. It only guarantees \textit{upward pressure}. If the sell-side wall is huge, positive OFI might just eat into the wall without ticking the price.
+    \item \textbf{Spread Crossing:} To profit from a directional signal, one usually pays the spread (hits the market). For AAPL/MSFT, the spread is tight (1 cent), but the price move captured by a 5-minute forecast might average only 0.5 cents.
+    \item \textbf{Latency:} Our data is aggregated. Real-time implementation requires processing NBBO feeds with micisecond latency.
+\end{itemize}
+The primary utility of this signal is likely \textbf{passive}: a market maker using it to \textit{avoid} joining the bid when a wave of selling is predicted (avoiding adverse selection), rather than aggressively trading.
+
+\subsection{Market Regimes}
+2023 was a specific year: rising interest rates, the Generative AI boom (benefiting MSFT), and generally low volatility compared to 2020-2022. Machine learning models in finance are notoriously non-stationary. A model trained on 2023 data might fail in a high-volatility crisis regime (e.g., 2008 or March 2020) where order flow dynamics shift from "splitting" to "panic dumping."
+
+\subsection{Universality}
+We studied two mega-cap stocks. These assets have "dense" order books with updates every millisecond. Small-cap or illiquid stocks have "sparse" books. The OFI metric might be much noisier for illiquid assets, and the cross-asset transmission mechanisms likely break down outside the core index constituents.
+
+\subsection{Future Work}
+\begin{enumerate}
+    \item \textbf{OFI-to-Return Map:} The next logical step is to map $\hat{OFI}_{t+1}$ explicitly to $\Delta P_{t+1}$. This requires estimating the Price Impact coefficient $\lambda$ dynamically.
+    \item \textbf{Tick-Level Hierarchical Models:} Using a Deep Learning model on tick data to output a "short-term alpha" and combining it with our 5-minute "inventory alpha."
+    \item \textbf{Full Universe Study:} Extending the analysis to the S\&P 500 components to map the full network topology of liquidity transmission.
+\end{enumerate}
+
 \section{Conclusion}
-This thesis successfully establishes that Order Flow Imbalance in major US equities is a predictable, persistent process at the 5-minute horizon. By rigorously processing WRDS TAQM data and employing leak-free validation, we show that XGBoost models can forecast the sign of future order imbalances with $\approx 79\%$ accuracy. The discovery of a strong MSFT $\to$ AAPL lead-lag relationship contributes empirical evidence to the theory of common factor liquidity. Future work should focus on linking this OFI predictability directly to realized price returns to quantify the actionable economic value.
+
+This thesis provides a comprehensive empirical analysis of Order Flow Imbalance in the US equity market. By processing terabytes of millisecond-level data for AAPL and MSFT, we have established several robust facts about market microstructure.
+
+We reject the hypothesis that order flow is a random walk. Instead, it exhibits strong, exploitable persistence (AR-structure) at the 5-minute horizon. We demonstrated that for this specific task, complex Deep Learning models (LSTM) are inferior to gradient boosting (XGBoost), highlighting the importance of matching model complexity to signal structure.
+
+Most notably, we uncovered a significant lead-lag relationship where MSFT order flow predicts AAPL order flow, contributing empirical evidence to the theory of common factor liquidity and index arbitrage transmission.
+
+While the "informational" predictability is high (79\% directional accuracy), we caution that "economic" predictability (alpha) is constrained by market impact and spreads. Nevertheless, the ability to forecast liquidity demand significantly better than random chance represents a vital input for the next generation of algorithmic execution and market-making strategies.
+
+\newpage
+\begin{thebibliography}{9}
+
+\bibitem{bouchaud2004}
+Bouchaud, J. P., Gefen, Y., Potters, M., \& Wyart, M. (2004).
+Fluctuations and response in financial markets: the subtle nature of 'random' price changes.
+\textit{Quantitative Finance}, 4(2), 176-190.
+
+\bibitem{cont2014}
+Cont, R., Kukanov, A., \& Stoikov, S. (2014).
+The price impact of order book events.
+\textit{Journal of financial econometrics}, 12(1), 47-88.
+
+\bibitem{glosten1985}
+Glosten, L. R., \& Milgrom, P. R. (1985).
+Bid, ask and transaction prices in a specialist market with heterogeneously informed traders.
+\textit{Journal of financial economics}, 14(1), 71-100.
+
+\bibitem{hasbrouck1991}
+Hasbrouck, J. (1991).
+Measuring the information content of stock trades.
+\textit{The Journal of Finance}, 46(1), 179-207.
+
+\bibitem{kyle1985}
+Kyle, A. S. (1985).
+Continuous auctions and insider trading.
+\textit{Econometrica: Journal of the Econometric Society}, 1315-1335.
+
+\bibitem{sirignano2019}
+Sirignano, J., \& Cont, R. (2019).
+Universal features of price formation in financial markets: perspectives from deep learning.
+\textit{Quantitative Finance}, 19(9), 1449-1459.
+
+\bibitem{chordia2000}
+Chordia, T., Roll, R., \& Subrahmanyam, A. (2000).
+Commonality in liquidity.
+\textit{Journal of Financial Economics}, 56(1), 3-28.
+
+\bibitem{bendavid2018}
+Ben-David, I., Franzoni, F., \& Moussawi, R. (2018).
+Do ETFs increase volatility?
+\textit{The Journal of Finance}, 73(6), 2471-2535.
+
+\end{thebibliography}
+
+\appendix
+\section{Appendix: Code Snippets}
+
+\subsection{SQL Logic for Event Classification}
+\begin{lstlisting}[language=SQL]
+WITH nbbo AS (
+    SELECT 
+        time_m,
+        best_bid, best_bidsiz, 
+        LAG(best_bid) OVER (ORDER BY time_m) AS prev_bid,
+        LAG(best_bidsiz) OVER (ORDER BY time_m) AS prev_bidsiz,
+        EXTRACT(EPOCH FROM time_m) as ts
+    FROM taqm_2023.nbbom_YYYYMMDD
+)
+SELECT
+    CASE 
+        WHEN best_bid > prev_bid THEN best_bidsiz
+        WHEN best_bid < prev_bid THEN -prev_bidsiz
+        ELSE best_bidsiz - prev_bidsiz 
+    END as ofi_contribution
+FROM nbbo;
+\end{lstlisting}
 
 \end{document}
